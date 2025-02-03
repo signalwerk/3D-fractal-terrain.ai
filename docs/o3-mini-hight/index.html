@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Interactive 3D Fractal Terrain Generator</title>
+    <style>
+      /* Remove margins and ensure the canvas fills the window */
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="glcanvas"></canvas>
+    <script type="text/javascript">
+      (function () {
+        "use strict";
+
+        // Get canvas and initialize WebGL context
+        const canvas = document.getElementById("glcanvas");
+        const gl = canvas.getContext("webgl");
+        if (!gl) {
+          alert("WebGL not supported by your browser");
+          return;
+        }
+        // Set canvas size
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+
+        // Vertex shader source
+        const vsSource = `
+          attribute vec3 aPosition;
+          attribute vec3 aNormal;
+          
+          uniform mat4 uModelMatrix;
+          uniform mat4 uViewMatrix;
+          uniform mat4 uProjectionMatrix;
+          
+          varying vec3 vNormal;
+          varying vec3 vPosition;
+          
+          void main(void) {
+            // Transform the vertex position into world space.
+            vec4 worldPos = uModelMatrix * vec4(aPosition, 1.0);
+            vPosition = worldPos.xyz;
+            // Transform the normal (ignoring nonuniform scaling).
+            vNormal = mat3(uModelMatrix) * aNormal;
+            gl_Position = uProjectionMatrix * uViewMatrix * worldPos;
+          }
+        `;
+
+        // Fragment shader source
+        const fsSource = `
+          precision mediump float;
+          
+          varying vec3 vNormal;
+          varying vec3 vPosition;
+          
+          uniform vec3 uLightDirection;
+          uniform vec3 uFogColor;
+          uniform float uFogDensity;
+          uniform vec3 uCameraPosition;
+          
+          void main(void) {
+            // Basic directional diffuse lighting.
+            vec3 normal = normalize(vNormal);
+            vec3 lightDir = normalize(uLightDirection);
+            float diffuse = max(dot(normal, lightDir), 0.0);
+            
+            // Base terrain color (a greenish tone) with a little ambient.
+            vec3 terrainColor = vec3(0.2, 0.7, 0.2) * diffuse + vec3(0.1, 0.3, 0.1);
+            
+            // Compute distance from camera for fog effect.
+            float distance = length(vPosition - uCameraPosition);
+            float fogFactor = exp(-uFogDensity * distance);
+            fogFactor = clamp(fogFactor, 0.0, 1.0);
+            
+            // Mix fog color with terrain color.
+            vec3 finalColor = mix(uFogColor, terrainColor, fogFactor);
+            gl_FragColor = vec4(finalColor, 1.0);
+          }
+        `;
+
+        // Initialize and compile shader program
+        const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+        if (!shaderProgram) {
+          return;
+        }
+        gl.useProgram(shaderProgram);
+
+        // Get attribute and uniform locations.
+        const attribLocations = {
+          position: gl.getAttribLocation(shaderProgram, "aPosition"),
+          normal: gl.getAttribLocation(shaderProgram, "aNormal"),
+        };
+        const uniformLocations = {
+          modelMatrix: gl.getUniformLocation(shaderProgram, "uModelMatrix"),
+          viewMatrix: gl.getUniformLocation(shaderProgram, "uViewMatrix"),
+          projectionMatrix: gl.getUniformLocation(shaderProgram, "uProjectionMatrix"),
+          lightDirection: gl.getUniformLocation(shaderProgram, "uLightDirection"),
+          fogColor: gl.getUniformLocation(shaderProgram, "uFogColor"),
+          fogDensity: gl.getUniformLocation(shaderProgram, "uFogDensity"),
+          cameraPosition: gl.getUniformLocation(shaderProgram, "uCameraPosition"),
+        };
+
+        // Generate terrain geometry using a diamond-square algorithm.
+        // We use a grid size of 65 (i.e. 2^6 + 1) for a moderate detail.
+        const terrainData = generateTerrain(65, 1.0, 0.7);
+        const buffers = initBuffers(gl, terrainData);
+
+        // Camera state: position and yaw (rotation about Y).
+        const camera = {
+          position: [0, 5, 20],
+          yaw: 0, // in radians
+          speed: 0.2,
+        };
+
+        // Keyboard input state.
+        const keys = {};
+        window.addEventListener("keydown", (e) => (keys[e.key] = true));
+        window.addEventListener("keyup", (e) => (keys[e.key] = false));
+
+        // Main render loop.
+        function render() {
+          updateCamera();
+          drawScene(gl, shaderProgram, buffers, attribLocations, uniformLocations, camera);
+          requestAnimationFrame(render);
+        }
+        requestAnimationFrame(render);
+
+        //
+        // ---- Helper Functions ----
+        //
+
+        // Compile a shader from source.
+        function loadShader(gl, type, source) {
+          const shader = gl.createShader(type);
+          gl.shaderSource(shader, source);
+          gl.compileShader(shader);
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert("Error compiling shader: " + gl.getShaderInfoLog(shader));
+            gl.deleteShader(shader);
+            return null;
+          }
+          return shader;
+        }
+
+        // Initialize the shader program.
+        function initShaderProgram(gl, vsSource, fsSource) {
+          const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+          const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+          const shaderProgram = gl.createProgram();
+          gl.attachShader(shaderProgram, vertexShader);
+          gl.attachShader(shaderProgram, fragmentShader);
+          gl.linkProgram(shaderProgram);
+          if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Unable to initialize the shader program: " + gl.getProgramInfoLog(shaderProgram));
+            return null;
+          }
+          return shaderProgram;
+        }
+
+        // Create buffers for terrain vertices, normals, and indices.
+        function initBuffers(gl, terrain) {
+          // Position buffer
+          const positionBuffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+          gl.bufferData(gl.ARRAY_BUFFER, terrain.vertices, gl.STATIC_DRAW);
+
+          // Normal buffer
+          const normalBuffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+          gl.bufferData(gl.ARRAY_BUFFER, terrain.normals, gl.STATIC_DRAW);
+
+          // Index buffer
+          const indexBuffer = gl.createBuffer();
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+          gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, terrain.indices, gl.STATIC_DRAW);
+
+          return {
+            position: positionBuffer,
+            normal: normalBuffer,
+            indices: indexBuffer,
+            indexCount: terrain.indices.length,
+          };
+        }
+
+        // Draw the scene.
+        function drawScene(gl, program, buffers, attribLocs, uniformLocs, camera) {
+          gl.clearColor(0.7, 0.8, 0.9, 1.0); // Sky/fog color
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          gl.enable(gl.DEPTH_TEST);
+
+          // Create matrices.
+          const modelMatrix = mat4Identity(); // no transformation for terrain
+
+          // Compute the view matrix using the camera position and yaw.
+          const forward = [Math.sin(camera.yaw), 0, Math.cos(camera.yaw)];
+          const target = [
+            camera.position[0] + forward[0],
+            camera.position[1],
+            camera.position[2] + forward[2],
+          ];
+          const up = [0, 1, 0];
+          const viewMatrix = mat4LookAt(camera.position, target, up);
+
+          const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+          const projectionMatrix = mat4Perspective(
+            degToRad(60),
+            aspect,
+            0.1,
+            1000.0
+          );
+
+          // Set the shader uniforms.
+          gl.uniformMatrix4fv(uniformLocs.modelMatrix, false, new Float32Array(modelMatrix));
+          gl.uniformMatrix4fv(uniformLocs.viewMatrix, false, new Float32Array(viewMatrix));
+          gl.uniformMatrix4fv(uniformLocs.projectionMatrix, false, new Float32Array(projectionMatrix));
+          gl.uniform3fv(uniformLocs.lightDirection, new Float32Array([-0.5, 1.0, -0.5]));
+          gl.uniform3fv(uniformLocs.fogColor, new Float32Array([0.7, 0.8, 0.9]));
+          gl.uniform1f(uniformLocs.fogDensity, 0.02);
+          gl.uniform3fv(uniformLocs.cameraPosition, new Float32Array(camera.position));
+
+          // Bind the position buffer.
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+          gl.enableVertexAttribArray(attribLocs.position);
+          gl.vertexAttribPointer(attribLocs.position, 3, gl.FLOAT, false, 0, 0);
+
+          // Bind the normal buffer.
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normal);
+          gl.enableVertexAttribArray(attribLocs.normal);
+          gl.vertexAttribPointer(attribLocs.normal, 3, gl.FLOAT, false, 0, 0);
+
+          // Bind the index buffer and draw the elements.
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+          gl.drawElements(gl.TRIANGLES, buffers.indexCount, gl.UNSIGNED_SHORT, 0);
+        }
+
+        // Update the camera position and orientation based on keyboard input.
+        // In this simple scheme:
+        //   - W/S: move forward/backward in the current view direction.
+        //   - A/D: rotate the view (yaw left/right).
+        function updateCamera() {
+          if (keys["w"] || keys["W"]) {
+            camera.position[0] += Math.sin(camera.yaw) * camera.speed;
+            camera.position[2] += Math.cos(camera.yaw) * camera.speed;
+          }
+          if (keys["s"] || keys["S"]) {
+            camera.position[0] -= Math.sin(camera.yaw) * camera.speed;
+            camera.position[2] -= Math.cos(camera.yaw) * camera.speed;
+          }
+          if (keys["a"] || keys["A"]) {
+            camera.yaw -= 0.03;
+          }
+          if (keys["d"] || keys["D"]) {
+            camera.yaw += 0.03;
+          }
+        }
+
+        // -- Matrix and Vector Utility Functions --
+
+        // Returns an identity 4x4 matrix (in column-major order).
+        function mat4Identity() {
+          return [
+            1, 0, 0, 0, //
+            0, 1, 0, 0, //
+            0, 0, 1, 0, //
+            0, 0, 0, 1,
+          ];
+        }
+
+        // Multiply two 4x4 matrices (a * b), assuming column-major order.
+        function mat4Multiply(a, b) {
+          const out = new Array(16);
+          for (let i = 0; i < 4; i++) {
+            for (let j = 0; j < 4; j++) {
+              out[j * 4 + i] =
+                a[0 * 4 + i] * b[j * 4 + 0] +
+                a[1 * 4 + i] * b[j * 4 + 1] +
+                a[2 * 4 + i] * b[j * 4 + 2] +
+                a[3 * 4 + i] * b[j * 4 + 3];
+            }
+          }
+          return out;
+        }
+
+        // Create a perspective projection matrix.
+        function mat4Perspective(fovy, aspect, near, far) {
+          const f = 1.0 / Math.tan(fovy / 2);
+          const nf = 1 / (near - far);
+          return [
+            f / aspect,
+            0,
+            0,
+            0,
+
+            0,
+            f,
+            0,
+            0,
+
+            0,
+            0,
+            (far + near) * nf,
+            -1,
+
+            0,
+            0,
+            (2 * far * near) * nf,
+            0,
+          ];
+        }
+
+        // Create a lookAt matrix.
+        function mat4LookAt(eye, center, up) {
+          const f = normalize(subtract(center, eye));
+          const s = normalize(cross(f, up));
+          const u = cross(s, f);
+
+          // Column-major order.
+          return [
+            s[0],
+            u[0],
+            -f[0],
+            0,
+
+            s[1],
+            u[1],
+            -f[1],
+            0,
+
+            s[2],
+            u[2],
+            -f[2],
+            0,
+
+            -dot(s, eye),
+            -dot(u, eye),
+            dot(f, eye),
+            1,
+          ];
+        }
+
+        // Convert degrees to radians.
+        function degToRad(d) {
+          return (d * Math.PI) / 180;
+        }
+
+        // Vector subtraction: a - b.
+        function subtract(a, b) {
+          return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        }
+
+        // Dot product of two vectors.
+        function dot(a, b) {
+          return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        }
+
+        // Cross product of two 3D vectors.
+        function cross(a, b) {
+          return [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+          ];
+        }
+
+        // Normalize a 3D vector.
+        function normalize(v) {
+          const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+          return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 0, 0];
+        }
+
+        // -- Terrain Generation Functions --
+
+        // Generates a fractal height map using the diamond-square algorithm.
+        // gridSize must be (2^n)+1 (e.g. 65 for n=6).
+        function generateHeightMap(gridSize, roughness) {
+          // Initialize 2D array.
+          const map = [];
+          for (let i = 0; i < gridSize; i++) {
+            map[i] = [];
+            for (let j = 0; j < gridSize; j++) {
+              map[i][j] = 0;
+            }
+          }
+          // Seed the four corners.
+          map[0][0] = Math.random() * 2 - 1;
+          map[0][gridSize - 1] = Math.random() * 2 - 1;
+          map[gridSize - 1][0] = Math.random() * 2 - 1;
+          map[gridSize - 1][gridSize - 1] = Math.random() * 2 - 1;
+
+          let stepSize = gridSize - 1;
+          let scale = roughness;
+
+          while (stepSize > 1) {
+            const halfStep = stepSize / 2;
+
+            // Diamond step.
+            for (let x = halfStep; x < gridSize; x += stepSize) {
+              for (let y = halfStep; y < gridSize; y += stepSize) {
+                const avg =
+                  (map[x - halfStep][y - halfStep] +
+                    map[x - halfStep][y + halfStep] +
+                    map[x + halfStep][y - halfStep] +
+                    map[x + halfStep][y + halfStep]) /
+                  4;
+                map[x][y] = avg + (Math.random() * 2 - 1) * scale;
+              }
+            }
+
+            // Square step.
+            for (let x = 0; x < gridSize; x += halfStep) {
+              // Offset every other row.
+              const yStart = (x / halfStep) % 2 === 0 ? halfStep : 0;
+              for (let y = yStart; y < gridSize; y += stepSize) {
+                let sum = 0;
+                let count = 0;
+                if (x - halfStep >= 0) {
+                  sum += map[x - halfStep][y];
+                  count++;
+                }
+                if (x + halfStep < gridSize) {
+                  sum += map[x + halfStep][y];
+                  count++;
+                }
+                if (y - halfStep >= 0) {
+                  sum += map[x][y - halfStep];
+                  count++;
+                }
+                if (y + halfStep < gridSize) {
+                  sum += map[x][y + halfStep];
+                  count++;
+                }
+                const avg = sum / count;
+                map[x][y] = avg + (Math.random() * 2 - 1) * scale;
+              }
+            }
+
+            stepSize /= 2;
+            scale *= 0.5; // Reduce random variation.
+          }
+          return map;
+        }
+
+        // Generate terrain geometry from a height map.
+        // Returns an object with typed arrays: vertices, normals, and indices.
+        function generateTerrain(gridSize, cellSize, roughness) {
+          const heights = generateHeightMap(gridSize, roughness);
+          const half = (gridSize - 1) / 2;
+
+          // Create arrays for positions and normals.
+          const vertexCount = gridSize * gridSize;
+          const vertices = new Float32Array(vertexCount * 3);
+          const normals = new Float32Array(vertexCount * 3);
+
+          // Fill the vertex positions.
+          for (let i = 0; i < gridSize; i++) {
+            for (let j = 0; j < gridSize; j++) {
+              const index = (i * gridSize + j) * 3;
+              // Center the terrain around the origin.
+              vertices[index + 0] = (i - half) * cellSize;
+              vertices[index + 1] = heights[i][j];
+              vertices[index + 2] = (j - half) * cellSize;
+            }
+          }
+
+          // Compute normals using finite differences.
+          for (let i = 0; i < gridSize; i++) {
+            for (let j = 0; j < gridSize; j++) {
+              const index = (i * gridSize + j) * 3;
+              // Calculate slopes using neighbors (use forward/backward differences at edges).
+              const heightL = j > 0 ? heights[i][j - 1] : heights[i][j];
+              const heightR = j < gridSize - 1 ? heights[i][j + 1] : heights[i][j];
+              const heightD = i > 0 ? heights[i - 1][j] : heights[i][j];
+              const heightU = i < gridSize - 1 ? heights[i + 1][j] : heights[i][j];
+
+              const dx = (heightR - heightL) / (2 * cellSize);
+              const dz = (heightU - heightD) / (2 * cellSize);
+              const normal = normalize([-dx, 1, -dz]);
+
+              normals[index + 0] = normal[0];
+              normals[index + 1] = normal[1];
+              normals[index + 2] = normal[2];
+            }
+          }
+
+          // Build the index array (two triangles per cell).
+          const indices = [];
+          for (let i = 0; i < gridSize - 1; i++) {
+            for (let j = 0; j < gridSize - 1; j++) {
+              const topLeft = i * gridSize + j;
+              const topRight = topLeft + 1;
+              const bottomLeft = (i + 1) * gridSize + j;
+              const bottomRight = bottomLeft + 1;
+              // First triangle.
+              indices.push(topLeft, bottomLeft, topRight);
+              // Second triangle.
+              indices.push(topRight, bottomLeft, bottomRight);
+            }
+          }
+          return {
+            vertices: vertices,
+            normals: normals,
+            indices: new Uint16Array(indices),
+          };
+        }
+      })();
+    </script>
+  </body>
+</html>
