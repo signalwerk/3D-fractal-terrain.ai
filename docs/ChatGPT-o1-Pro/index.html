@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -23,7 +23,7 @@
   <body>
     <canvas id="glCanvas"></canvas>
     <script>
-      /*
+      /* 
    Simple WebGL Fractal Terrain Demo
    - Diamond-square fractal generation
    - Basic directional lighting
@@ -238,10 +238,10 @@ void main(void) {
   // Transform the vertex position into world space
   vec4 worldPos = uModel * vec4(aPosition, 1.0);
   vWorldPos = worldPos.xyz;
-
+  
   // Pass distance from camera for fog
   vDistance = distance(uCameraPos, worldPos.xyz);
-
+  
   // Simple directional lighting (Lambertian)
   vec3 normal = normalize((uModel * vec4(aNormal, 0.0)).xyz);
   float diffuse = max(dot(normal, normalize(uLightDirection)), 0.0);
@@ -494,8 +494,8 @@ void main(void) {
           // Light from above
           gl.uniform3fv(uLightDirLoc, [0.2, 1.0, 0.2]);
           gl.uniform3fv(uCameraPosLoc, [cameraX, cameraY, cameraZ]);
-          gl.uniform3fv(uFogColorLoc, [1, 0.8, 0]); // a light blueish fog
-          gl.uniform1f(uFogDistanceLoc, 100.0); // tune for effect
+          gl.uniform3fv(uFogColorLoc, [0.7, 0.8, 1.0]); // a light blueish fog
+          gl.uniform1f(uFogDistanceLoc, 200.0); // tune for effect
 
           // Draw
           gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
